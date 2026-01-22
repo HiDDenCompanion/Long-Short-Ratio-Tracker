@@ -1,1 +1,120 @@
-python-telegram-bot
+# .gitignore
+# Session dosyası - GİZLİ TUTUN!
+*.session
+*.session-journal
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+---
+# Procfile (Railway için)
+worker: python main.py
+
+---
+# runtime.txt (Python versiyonu)
+python-3.11.0
+
+---
+# README.md
+
+# Crypto Signal Bot
+
+Bu bot @longshortoi kanalından BTC verilerini izler ve anormal değişikliklerde Telegram grup'unuza sinyal gönderir.
+
+## Railway Deployment
+
+### 1. Environment Variables Ayarlama
+
+Railway dashboard'da şu değişkenleri ekleyin:
+
+**Zorunlu:**
+- `API_ID` = 30106274
+- `API_HASH` = 7ac4bc79d61f040727c2cfbad2f626ad
+- `PHONE` = +1 405 856 1605
+- `SIGNAL_BOT_TOKEN` = 8511171791:AAFhkfVPLLvq96aXGeTWfJtgPAUJuOSXk3U
+- `SIGNAL_CHAT_ID` = -1707384090
+
+**Opsiyonel (varsayılan değerler):**
+- `SOURCE_CHANNEL` = @longshortoi
+- `THRESHOLD_PRICE` = 2.0 (Fiyat değişim eşiği %)
+- `THRESHOLD_OI` = 5.0 (Open Interest eşiği %)
+- `THRESHOLD_FR` = 50.0 (Funding Rate eşiği %)
+- `THRESHOLD_RATIO` = 3.0 (Long/Short Ratio eşiği %)
+- `THRESHOLD_VOLUME` = 30.0 (Taker Volume eşiği %)
+- `HISTORY_SIZE` = 12 (Kaç veri noktası saklansın)
+
+### 2. İlk Çalıştırma
+
+İlk deployment'ta Telegram telefon doğrulaması yapılması gerekecek.
+
+**Seçenek A - Lokal Session Oluşturma (Önerilen):**
+
+1. Bilgisayarınızda çalıştırın:
+```bash
+pip install -r requirements.txt
+python main.py
+```
+
+2. Telegram'dan gelen kodu girin
+
+3. Oluşan `bot_session.session` dosyasını Railway'e yükleyin
+
+**Seçenek B - Railway Logs:**
+
+Railway logs'ta telefon kodu isteyecek, Telegram'dan gelen kodu manuel girebilirsiniz.
+
+### 3. Monitoring
+
+Railway logs'tan botun çalışıp çalışmadığını izleyebilirsiniz:
+
+```
+✅ Telegram'a bağlanıldı!
+👂 @longshortoi kanalı dinleniyor...
+📥 Yeni veri alındı: $89,964.10
+✓ Veri normal - Anomali yok
+```
+
+## Eşik Değerlerini Ayarlama
+
+Sinyallerin hassasiyetini Railway environment variables'dan ayarlayabilirsiniz:
+
+- **Daha az sinyal** istiyorsanız: Eşik değerlerini yükseltin
+- **Daha çok sinyal** istiyorsanız: Eşik değerlerini düşürün
+
+Örnek:
+- `THRESHOLD_PRICE=1.0` → Fiyat %1 değişince sinyal
+- `THRESHOLD_PRICE=5.0` → Fiyat %5 değişince sinyal
+
+## Sorun Giderme
+
+**Bot mesaj gönderemiyor:**
+- Botunuzu gruba admin olarak ekleyin
+- SIGNAL_CHAT_ID'nin doğru olduğundan emin olun
+
+**Veri gelmiyor:**
+- @longshortoi kanalına erişiminiz olduğundan emin olun
+- Kanal public olmalı
+
+**Session hatası:**
+- bot_session.session dosyasını yeniden oluşturun
+- Telefon numarasının doğru olduğundan emin olun
