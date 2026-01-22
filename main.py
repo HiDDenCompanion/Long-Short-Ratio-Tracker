@@ -1,11 +1,10 @@
 import re
 import os
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import deque
 from telethon import TelegramClient, events
 from telegram import Bot
-import statistics
 
 # ===== AYARLAR (Railway Variables) =====
 API_ID = int(os.getenv('API_ID', '0'))
@@ -22,8 +21,7 @@ class MomentumTracker:
             'oi': deque(maxlen=288),
             'long_ratio': deque(maxlen=288),
             'funding_rate': deque(maxlen=288),
-            'taker_buy': deque(maxlen=288),
-            'taker_sell': deque(maxlen=288)
+            'taker_buy': deque(maxlen=288)
         }
 
     def add_data(self, data):
@@ -33,21 +31,47 @@ class MomentumTracker:
 
 tracker = MomentumTracker()
 
+def clean_value(val_str):
+    """K, M, B gibi birimleri sayıya çevirir"""
+    if not val_str: return 0.0
+    val_str = val_str.replace(',', '').upper().strip()
+    
+    # Harf ve rakam ayıklama
+    multiplier = 1.0
+    if 'K' in val_str: multiplier = 1000.0
+    elif 'M' in val_str: multiplier = 1000000.0
+    elif 'B' in val_str: multiplier = 1000000000.0
+    
+    # Sadece rakam ve nokta kalsın
+    num_part = re.sub(r'[^\d.]', '', val_str)
+    try:
+        return float(num_part) * multiplier
+    except:
+        return 0.0
+
 def parse_message(text):
     data = {}
     try:
-        p = re.search(r'\$ ([\d,]+\.\d+)', text)
-        if p: data['price'] = float(p.group(1).replace(',', ''))
-        oi = re.search(r'Open Interest\s+([\d,]+\.\d+) BTC', text)
-        if oi: data['oi'] = float(oi.group(1).replace(',', ''))
+        # Fiyat
+        p = re.search(r'\$ ([\d,.]+)', text)
+        if p: data['price'] = clean_value(p.group(1))
+        
+        # Open Interest (BTC cinsinden olanı alıyoruz)
+        oi = re.search(r'Open Interest\s+([\d,.]+[KMB]?) BTC', text)
+        if oi: data['oi'] = clean_value(oi.group(1))
+
+        # L/S Oranı
         long_m = re.search(r'🟢 LONG : ([\d.]+)%', text)
         if long_m: data['long_ratio'] = float(long_m.group(1))
-        fr = re.search(r'Funding Rate\s+([\d.]+) %', text)
+        
+        # Funding Rate
+        fr = re.search(r'Funding Rate\s+([\d.-]+) %', text)
         if fr: data['funding_rate'] = float(fr.group(1))
-        buy = re.search(r'Buy \+(\d+\.\d+)', text)
-        if buy: data['taker_buy'] = float(buy.group(1))
-        sell = re.search(r'Sell \+(\d+\.\d+)', text)
-        if sell: data['taker_sell'] = float(sell.group(1))
+        
+        # Taker Buy Volume
+        buy = re.search(r'Buy \+([\d,.]+[KMB]?)', text)
+        if buy: data['taker_buy'] = clean_value(buy.group(1))
+        
     except Exception as e:
         print(f"⚠️ Parse hatası: {e}")
     return data
@@ -58,77 +82,51 @@ async def check_momentum(data, bot):
     t_oi = float(os.getenv('THRESHOLD_OI', '3.0'))
     t_vol = float(os.getenv('THRESHOLD_VOLUME', '100.0'))
     t_ratio = float(os.getenv('THRESHOLD_RATIO', '5.0'))
-    t_fr = float(os.getenv('THRESHOLD_FR', '50.0'))
 
-    # 1. Long/Short Oranı (Özel Mutlak Puan Filtresi)
+    # 1. Long/Short Oranı (Mutlak Puan)
     if 'long_ratio' in data and len(tracker.history['long_ratio']) >= 2:
         diff = data['long_ratio'] - tracker.history['long_ratio'][-2]
         if abs(diff) >= t_ratio:
             direction = "🟢 LONG GÜÇLENDİ" if diff > 0 else "🔴 SHORT GÜÇLENDİ"
             signals.append(f"⚖️ <b>L/S MAKAS DEĞİŞİMİ</b>\n{direction}: {diff:+.2f} Puan")
 
-    # 2. Diğer Momentum Kontrolleri (Önceki Veriyle Kıyaslama)
+    # 2. Diğerleri (Yüzdesel Momentum)
     checks = [
-        ('price', '💰 Fiyat', t_price, "{:,.2f}"),
-        ('oi', '📊 Open Interest', t_oi, "{:,.2f}"),
-        ('taker_buy', '🔥 Buy Vol', t_vol, "{:,.2f}"),
-        ('funding_rate', '💸 Funding Rate', t_fr, "{:.4f}")
+        ('price', '💰 Fiyat', t_price),
+        ('oi', '📊 Open Interest', t_oi),
+        ('taker_buy', '🔥 Buy Vol', t_vol)
     ]
 
-    for key, label, threshold, fmt in checks:
+    for key, label, threshold in checks:
         if key in data and len(tracker.history[key]) >= 2:
             current = data[key]
             prev = tracker.history[key][-2]
-            if prev == 0: continue
+            if prev <= 0: continue
             
             change = ((current - prev) / prev) * 100
             if abs(change) >= threshold:
                 icon = "🚀" if change > 0 else "📉"
-                signals.append(
-                    f"{icon} <b>{label} Anomali</b>\n"
-                    f"Değişim: %{change:+.2f}\n"
-                    f"Önceki: {fmt.format(prev)} | Güncel: {fmt.format(current)}"
-                )
+                signals.append(f"{icon} <b>{label} Anomali</b>: %{change:+.2f}")
 
     if signals:
         now = datetime.now().strftime("%H:%M")
         msg = f"🚨 <b>MOMENTUM RAPORU</b> (⏰ {now})\n\n" + "\n\n".join(signals)
-        try:
-            await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=msg, parse_mode='HTML')
-            print(f"✅ [{now}] Sinyal gönderildi.")
-        except Exception as e:
-            print(f"❌ Mesaj hatası: {e}")
+        await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=msg, parse_mode='HTML')
 
 async def main():
-    print("🚀 Bot başlatma süreci başladı...")
     bot = Bot(token=SIGNAL_BOT_TOKEN)
     client = TelegramClient('bot_session', API_ID, API_HASH)
-    
     await client.start(phone=PHONE)
-    print("🌐 Telegram Client başarıyla bağlandı!")
     
-    # Başlangıç Mesajı
-    start_text = (
-        "<b>🤖 BTC Momentum Bot Aktif!</b>\n\n"
-        "📈 5 dakikalık periyotlarla uçurum farklar takip ediliyor.\n"
-        "⚖️ L/S Oranı: 5 Puan Sapma\n"
-        "🔥 Hacim: %100 Sapma\n"
-        "💰 Fiyat: %1 Sapma"
-    )
-    try:
-        await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=start_text, parse_mode='HTML')
-    except: pass
-
+    print("🌐 Bot Birim Dönüştürücü Desteğiyle Başlatıldı!")
+    
     @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
     async def handler(event):
-        now = datetime.now().strftime("%H:%M:%S")
-        print(f"📩 [{now}] Veri geldi, analiz ediliyor...")
         data = parse_message(event.message.message)
         if data:
             tracker.add_data(data)
             await check_momentum(data, bot)
     
-    print(f"👂 {SOURCE_CHANNEL} dinleniyor. Loglar akmaya hazır!")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
