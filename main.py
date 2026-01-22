@@ -1,3 +1,4 @@
+import os
 import re
 import json
 from datetime import datetime
@@ -8,9 +9,9 @@ from telegram.ext import Application, MessageHandler, filters
 import statistics
 
 # ===== AYARLAR =====
-BOT_TOKEN = "YOUR_BOT_TOKEN"  # Sinyal göndermek için
-SOURCE_CHAT_ID = "SOURCE_CHAT_ID"  # Verileri aldığınız bot/kanal ID
-SIGNAL_CHAT_ID = "YOUR_USER_ID"  # Sinyal gönderilecek chat ID
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+SOURCE_CHAT_ID = os.getenv("SOURCE_CHAT_ID")
+SIGNAL_CHAT_ID = os.getenv("SIGNAL_CHAT_ID")
 
 # Eşik değerleri (% olarak)
 THRESHOLDS = {
