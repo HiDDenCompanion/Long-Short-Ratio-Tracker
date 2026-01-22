@@ -1,29 +1,31 @@
-import os
 import re
-import json
+import os
 from datetime import datetime
 from collections import deque
 import asyncio
+from telethon import TelegramClient, events
 from telegram import Bot
-from telegram.ext import Application, MessageHandler, filters
 import statistics
 
-# ===== AYARLAR =====
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-SOURCE_CHAT_ID = os.getenv("SOURCE_CHAT_ID")
-SIGNAL_CHAT_ID = os.getenv("SIGNAL_CHAT_ID")
+# ===== AYARLAR (Railway Environment Variables'dan alınacak) =====
+API_ID = int(os.getenv('API_ID', '0'))
+API_HASH = os.getenv('API_HASH', '')
+PHONE = os.getenv('PHONE', '')
+SOURCE_CHANNEL = os.getenv('SOURCE_CHANNEL', '@longshortoi')
+SIGNAL_BOT_TOKEN = os.getenv('SIGNAL_BOT_TOKEN', '')
+SIGNAL_CHAT_ID = int(os.getenv('SIGNAL_CHAT_ID', '0'))
 
-# Eşik değerleri (% olarak)
+# Eşik değerleri (% olarak) - İsterseniz bunları da env'den alabilirsiniz
 THRESHOLDS = {
-    'price_change': 2.0,           # Fiyat değişimi %2'den fazlaysa
-    'open_interest': 5.0,          # OI değişimi %5'ten fazlaysa
-    'funding_rate': 50.0,          # Funding rate %50'den fazla değişirse
-    'long_short_ratio': 3.0,       # Long/Short oranı %3'ten fazla değişirse
-    'taker_volume': 30.0           # Taker volume %30'dan fazla değişirse
+    'price_change': float(os.getenv('THRESHOLD_PRICE', '2.0')),
+    'open_interest': float(os.getenv('THRESHOLD_OI', '5.0')),
+    'funding_rate': float(os.getenv('THRESHOLD_FR', '50.0')),
+    'long_short_ratio': float(os.getenv('THRESHOLD_RATIO', '3.0')),
+    'taker_volume': float(os.getenv('THRESHOLD_VOLUME', '30.0'))
 }
 
 # Son N veriyi saklayacağız (ortalama için)
-HISTORY_SIZE = 12  # 12 * 5dk = son 1 saat
+HISTORY_SIZE = int(os.getenv('HISTORY_SIZE', '12'))
 
 # ===== VERİ DEPOLAMA =====
 class DataTracker:
@@ -35,6 +37,7 @@ class DataTracker:
         self.short_ratio_history = deque(maxlen=max_size)
         self.taker_buy_history = deque(maxlen=max_size)
         self.taker_sell_history = deque(maxlen=max_size)
+        self.last_data = {}
     
     def add_data(self, data):
         """Yeni veriyi ekle"""
@@ -45,6 +48,7 @@ class DataTracker:
         self.short_ratio_history.append(data.get('short_ratio', 0))
         self.taker_buy_history.append(data.get('taker_buy', 0))
         self.taker_sell_history.append(data.get('taker_sell', 0))
+        self.last_data = data
     
     def get_average(self, data_list):
         """Ortalama hesapla"""
@@ -97,22 +101,23 @@ def parse_message(text):
             data['taker_sell'] = float(sell_match.group(1))
         
     except Exception as e:
-        print(f"Parse hatası: {e}")
+        print(f"⚠️ Parse hatası: {e}")
     
     return data
 
-# ===== SİNYAL KONTROLÜ =====
-async def check_signals(data, bot):
+# ===== SİNYAL KONTROLÜ VE GÖNDERME =====
+async def check_and_send_signals(data):
     """Anormal değişimleri kontrol et ve sinyal gönder"""
     signals = []
     
     # Yeterli veri var mı?
     if len(tracker.price_history) < 3:
+        print(f"📊 Veri biriktiriliyor... ({len(tracker.price_history)}/{HISTORY_SIZE})")
         return
     
     # 1. Fiyat değişimi kontrolü
     avg_price = tracker.get_average(tracker.price_history)
-    if avg_price:
+    if avg_price and data.get('price'):
         price_change = tracker.calculate_change_percent(data['price'], avg_price)
         if abs(price_change) > THRESHOLDS['price_change']:
             direction = "📈 YÜKSELİŞ" if price_change > 0 else "📉 DÜŞÜŞ"
@@ -125,7 +130,7 @@ async def check_signals(data, bot):
     
     # 2. Open Interest kontrolü
     avg_oi = tracker.get_average(tracker.oi_history)
-    if avg_oi:
+    if avg_oi and data.get('open_interest'):
         oi_change = tracker.calculate_change_percent(data['open_interest'], avg_oi)
         if abs(oi_change) > THRESHOLDS['open_interest']:
             signals.append(
@@ -137,7 +142,7 @@ async def check_signals(data, bot):
     
     # 3. Funding Rate kontrolü
     avg_fr = tracker.get_average(tracker.funding_rate_history)
-    if avg_fr:
+    if avg_fr and data.get('funding_rate'):
         fr_change = tracker.calculate_change_percent(data['funding_rate'], avg_fr)
         if abs(fr_change) > THRESHOLDS['funding_rate']:
             signals.append(
@@ -149,7 +154,7 @@ async def check_signals(data, bot):
     
     # 4. Long/Short Ratio kontrolü
     avg_long = tracker.get_average(tracker.long_ratio_history)
-    if avg_long:
+    if avg_long and data.get('long_ratio'):
         ratio_change = tracker.calculate_change_percent(data['long_ratio'], avg_long)
         if abs(ratio_change) > THRESHOLDS['long_short_ratio']:
             signals.append(
@@ -162,7 +167,7 @@ async def check_signals(data, bot):
     
     # 5. Taker Volume kontrolü
     avg_buy = tracker.get_average(tracker.taker_buy_history)
-    if avg_buy:
+    if avg_buy and data.get('taker_buy'):
         buy_change = tracker.calculate_change_percent(data['taker_buy'], avg_buy)
         if abs(buy_change) > THRESHOLDS['taker_volume']:
             signals.append(
@@ -178,48 +183,69 @@ async def check_signals(data, bot):
         message = f"🚨 ANOMALİ TESPİT EDİLDİ! 🚨\n⏰ {timestamp}\n\n" + "\n\n".join(signals)
         
         try:
+            bot = Bot(token=SIGNAL_BOT_TOKEN)
             await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=message)
-            print(f"✅ Sinyal gönderildi: {len(signals)} adet")
+            print(f"✅ Sinyal gönderildi: {len(signals)} adet anomali")
         except Exception as e:
             print(f"❌ Sinyal gönderme hatası: {e}")
-
-# ===== MESAJ İŞLEYİCİ =====
-async def handle_message(update, context):
-    """Gelen mesajları işle"""
-    if not update.message or not update.message.text:
-        return
-    
-    text = update.message.text
-    
-    # Veriyi parse et
-    data = parse_message(text)
-    
-    if data:
-        print(f"📥 Veri alındı: Price=${data.get('price', 0):,.2f}")
-        
-        # Veriyi kaydet
-        tracker.add_data(data)
-        
-        # Sinyalleri kontrol et
-        await check_signals(data, context.bot)
+    else:
+        print(f"✓ Veri normal - Anomali yok")
 
 # ===== MAIN =====
-def main():
-    """Botu başlat"""
+async def main():
+    """Ana fonksiyon"""
+    # Environment variables kontrolü
+    if not all([API_ID, API_HASH, PHONE, SIGNAL_BOT_TOKEN, SIGNAL_CHAT_ID]):
+        print("❌ HATA: Gerekli environment variables eksik!")
+        print("Lütfen Railway'de şunları ayarlayın:")
+        print("- API_ID")
+        print("- API_HASH") 
+        print("- PHONE")
+        print("- SIGNAL_BOT_TOKEN")
+        print("- SIGNAL_CHAT_ID")
+        print("- SOURCE_CHANNEL (opsiyonel, default: @longshortoi)")
+        return
+    
     print("🤖 Bot başlatılıyor...")
+    print(f"📡 Dinlenecek kanal: {SOURCE_CHANNEL}")
+    print(f"📢 Sinyaller gönderilecek: {SIGNAL_CHAT_ID}")
     
-    # Bot oluştur
-    application = Application.builder().token(BOT_TOKEN).build()
+    # Telethon client oluştur
+    client = TelegramClient('bot_session', API_ID, API_HASH)
     
-    # Mesaj dinleyici ekle
-    application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
-    )
+    await client.start(phone=PHONE)
+    print("✅ Telegram'a bağlanıldı!")
     
-    print("✅ Bot çalışıyor! Veriler bekleniyor...")
+    # Kanal mesajlarını dinle
+    @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
+    async def handler(event):
+        text = event.message.message
+        
+        # Veriyi parse et
+        data = parse_message(text)
+        
+        if data and data.get('price'):  # En azından fiyat varsa
+            print(f"\n📥 Yeni veri alındı: ${data.get('price', 0):,.2f}")
+            
+            # Veriyi kaydet
+            tracker.add_data(data)
+            
+            # Sinyalleri kontrol et ve gönder
+            await check_and_send_signals(data)
+        else:
+            print("⚠️ Bu mesaj veri içermiyor, atlanıyor...")
     
-    # Botu çalıştır
-    application.run_polling(allowed_updates=["message"])
+    print(f"👂 {SOURCE_CHANNEL} kanalı dinleniyor...")
+    print("⏳ Veriler bekleniyor...\n")
+    print(f"📊 Eşik Değerleri:")
+    print(f"  - Fiyat Değişimi: {THRESHOLDS['price_change']}%")
+    print(f"  - Open Interest: {THRESHOLDS['open_interest']}%")
+    print(f"  - Funding Rate: {THRESHOLDS['funding_rate']}%")
+    print(f"  - Long/Short Ratio: {THRESHOLDS['long_short_ratio']}%")
+    print(f"  - Taker Volume: {THRESHOLDS['taker_volume']}%\n")
+    
+    # Sürekli çalışır durumda tut
+    await client.run_until_disconnected()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
