@@ -15,6 +15,7 @@ SOURCE_CHANNEL = os.getenv('SOURCE_CHANNEL', '@longshortoi')
 SIGNAL_BOT_TOKEN = os.getenv('SIGNAL_BOT_TOKEN', '')
 SIGNAL_CHAT_ID = int(os.getenv('SIGNAL_CHAT_ID', '0'))
 
+# Zaman pencereleri
 WINDOWS = [1, 4, 8, 12, 24]
 
 class AnomalyTracker:
@@ -45,7 +46,14 @@ class AnomalyTracker:
         now = datetime.now()
         target = now - timedelta(hours=hours)
         values = [v for v, t in self.history[key] if t >= target]
+        # Sadece yeterli veri varsa ortalama döndür
         return statistics.mean(values) if len(values) >= 2 else None
+
+    def get_count(self, key, hours):
+        """Belirli zaman dilimindeki veri adedini döndürür"""
+        now = datetime.now()
+        target = now - timedelta(hours=hours)
+        return len([v for v, t in self.history[key] if t >= target])
 
 tracker = AnomalyTracker()
 
@@ -62,70 +70,57 @@ def parse_message(text):
         if fr: data['funding_rate'] = float(fr.group(1))
         buy = re.search(r'Buy \+(\d+\.\d+)', text)
         if buy: data['taker_buy'] = float(buy.group(1))
-    except Exception as e:
-        print(f"⚠️ Parse hatası: {e}")
+    except: pass
     return data
 
 async def process_signals(data, bot):
     signals = []
-    now_str = datetime.now().strftime("%H:%M:%S")
-
-    # LOG: Analiz başlıyor
-    print(f"🔍 [{now_str}] Veri analiz ediliyor...")
-
-    # 1. LS Oranı Kontrolü
+    threshold_vol = float(os.getenv('THRESHOLD_VOLUME', '100.0'))
+    
+    # 1. LS Oranı (Mutlak %5 - Her zaman aktif)
     if len(tracker.history['long_ratio']) >= 2:
-        current_long = data['long_ratio']
-        last_long = tracker.history['long_ratio'][-2][0]
-        diff = current_long - last_long
+        diff = data['long_ratio'] - tracker.history['long_ratio'][-2][0]
         if abs(diff) >= 5.0:
             signals.append(f"⚡ <b>LS SERT SAPMA</b>: %{abs(diff):.2f}")
 
-    # 2. Ortalama Anomalileri
+    # 2. Diğer Anomaliler
     check_map = {'price': 'Fiyat', 'oi': 'OI', 'funding_rate': 'Funding', 'taker_buy': 'Buy Vol'}
     for key, label in check_map.items():
         if key in data:
             current_val = data[key]
             for hr in WINDOWS:
                 avg = tracker.get_avg(key, hr)
+                count = tracker.get_count(key, hr)
+                
                 if avg:
+                    # ÖZEL ŞART: Buy Vol için en az 4 saatlik (48 adet) veri birikmiş olmalı
+                    if key == 'taker_buy' and count < 48:
+                        continue 
+                        
                     change = ((current_val - avg) / avg) * 100
-                    if abs(change) >= 2.0:
+                    
+                    # Eşik kontrolü
+                    threshold = threshold_vol if key == 'taker_buy' else 2.0
+                    if abs(change) >= threshold:
                         signals.append(f"⚠️ {label} Anomalisi ({hr}s Ort.): %{change:+.2f}")
                         break
 
     if signals:
-        msg = f"🚨 <b>ANOMALİ TESPİT EDİLDİ</b>\n\n" + "\n\n".join(signals)
-        try:
-            await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=msg, parse_mode='HTML')
-            print(f"🚀 Sinyal Telegram'a gönderildi!")
-        except Exception as e:
-            print(f"❌ Telegram gönderim hatası: {e}")
-    else:
-        print("✅ Veriler normal seyrinde.")
+        msg = f"🚨 <b>STRATEJİK ANOMALİ</b>\n\n" + "\n\n".join(signals)
+        await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=msg, parse_mode='HTML')
 
 async def main():
-    print("🚀 Bot başlatma süreci başladı...")
     bot = Bot(token=SIGNAL_BOT_TOKEN)
     client = TelegramClient('bot_session', API_ID, API_HASH)
-    
     await client.start(phone=PHONE)
-    print("🌐 Telegram Client başarıyla bağlandı!")
     
-    # Başlangıç bildirimi
-    try:
-        await bot.send_message(chat_id=SIGNAL_CHAT_ID, text="<b>✅ Bot Aktif ve Log Akışı Başladı!</b>", parse_mode='HTML')
-    except: pass
-
     @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
     async def handler(event):
-        print(f"\n📩 [@longshortoi] Yeni mesaj yakalandı.")
         data = parse_message(event.message.message)
         if data:
             tracker.add_data(data)
             await process_signals(data, bot)
     
-    print(f"👂 {SOURCE_CHANNEL} dinleniyor. Loglar burada görünecek...")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
