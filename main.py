@@ -83,12 +83,17 @@ async def check_momentum(data, bot):
     t_vol = float(os.getenv('THRESHOLD_VOLUME', '100.0'))
     t_ratio = float(os.getenv('THRESHOLD_RATIO', '5.0'))
 
-    # 1. Long/Short Oranı (Mutlak Puan)
+    # 1. Long/Short Oranı (Mutlak Puan Filtresi)
     if 'long_ratio' in data and len(tracker.history['long_ratio']) >= 2:
         diff = data['long_ratio'] - tracker.history['long_ratio'][-2]
         if abs(diff) >= t_ratio:
-            direction = "🟢 LONG GÜÇLENDİ" if diff > 0 else "🔴 SHORT GÜÇLENDİ"
-            signals.append(f"⚖️ <b>L/S MAKAS DEĞİŞİMİ</b>\n{direction}: {diff:+.2f} Puan")
+            # Burayı güncelledik: Eksi değer kafa karışıklığını giderdik
+            if diff > 0:
+                direction = f"🟢 LONG ARTIŞI: +{diff:.2f} Puan"
+            else:
+                direction = f"🔴 SHORT ARTIŞI: {abs(diff):.2f} Puan"
+            
+            signals.append(f"⚖️ <b>L/S MAKAS DEĞİŞİMİ</b>\n{direction}")
 
     # 2. Diğerleri (Yüzdesel Momentum)
     checks = [
