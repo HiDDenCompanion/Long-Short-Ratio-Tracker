@@ -1,172 +1,139 @@
 import re
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import deque
 import asyncio
 from telethon import TelegramClient, events
 from telegram import Bot
 import statistics
 
-# ===== AYARLAR (Railway Environment Variables) =====
+# ===== AYARLAR =====
 API_ID = int(os.getenv('API_ID', '0'))
 API_HASH = os.getenv('API_HASH', '')
 PHONE = os.getenv('PHONE', '')
 SOURCE_CHANNEL = os.getenv('SOURCE_CHANNEL', '@longshortoi')
 SIGNAL_BOT_TOKEN = os.getenv('SIGNAL_BOT_TOKEN', '')
+SIGNAL_CHAT_ID = int(os.getenv('SIGNAL_CHAT_ID', '0'))
 
-# ÖNEMLİ: Grup ID'leri genelde - ile başlar. Env'den gelen veriyi tam sayıya çeviriyoruz.
-try:
-    SIGNAL_CHAT_ID = int(os.getenv('SIGNAL_CHAT_ID', '0'))
-except ValueError:
-    SIGNAL_CHAT_ID = os.getenv('SIGNAL_CHAT_ID', '')
+# Zaman pencereleri (saat cinsinden)
+WINDOWS = [1, 4, 8, 12, 24]
 
-# Eşik değerleri (% olarak)
-THRESHOLDS = {
-    'price_change': float(os.getenv('THRESHOLD_PRICE', '2.0')),
-    'open_interest': float(os.getenv('THRESHOLD_OI', '5.0')),
-    'funding_rate': float(os.getenv('THRESHOLD_FR', '50.0')),
-    'long_short_ratio': float(os.getenv('THRESHOLD_RATIO', '3.0')),
-    'taker_volume': float(os.getenv('THRESHOLD_VOLUME', '30.0'))
-}
+# ===== VERİ TAKİBİ VE ANALİZ MERKEZİ =====
+class AnomalyTracker:
+    def __init__(self):
+        # Verileri zaman damgasıyla tutuyoruz
+        self.history = {
+            'price': deque(),
+            'oi': deque(),
+            'long_ratio': deque(),
+            'funding_rate': deque(),
+            'taker_buy': deque()
+        }
+        self.max_age = timedelta(hours=24)
 
-HISTORY_SIZE = int(os.getenv('HISTORY_SIZE', '12'))
-
-# ===== VERİ DEPOLAMA =====
-class DataTracker:
-    def __init__(self, max_size=HISTORY_SIZE):
-        self.price_history = deque(maxlen=max_size)
-        self.oi_history = deque(maxlen=max_size)
-        self.funding_rate_history = deque(maxlen=max_size)
-        self.long_ratio_history = deque(maxlen=max_size)
-        self.short_ratio_history = deque(maxlen=max_size)
-        self.taker_buy_history = deque(maxlen=max_size)
-        self.taker_sell_history = deque(maxlen=max_size)
-    
     def add_data(self, data):
-        if 'price' in data: self.price_history.append(data['price'])
-        if 'open_interest' in data: self.oi_history.append(data['open_interest'])
-        if 'funding_rate' in data: self.funding_rate_history.append(data['funding_rate'])
-        if 'long_ratio' in data: self.long_ratio_history.append(data['long_ratio'])
-        if 'short_ratio' in data: self.short_ratio_history.append(data['short_ratio'])
-        if 'taker_buy' in data: self.taker_buy_history.append(data['taker_buy'])
-        if 'taker_sell' in data: self.taker_sell_history.append(data['taker_sell'])
-    
-    def get_average(self, data_list):
-        if len(data_list) < 2: return None
-        return statistics.mean(data_list)
-    
-    def calculate_change_percent(self, current, average):
-        if average == 0: return 0
-        return ((current - average) / average) * 100
+        now = datetime.now()
+        for key in self.history:
+            if key in data:
+                self.history[key].append((data[key], now))
+        self._cleanup()
 
-tracker = DataTracker()
+    def _cleanup(self):
+        now = datetime.now()
+        for key in self.history:
+            while self.history[key] and (now - self.history[key][0][1]) > self.max_age:
+                self.history[key].popleft()
 
-# ===== VERİ PARSE ETME =====
+    def get_avg(self, key, hours):
+        now = datetime.now()
+        target = now - timedelta(hours=hours)
+        values = [v for v, t in self.history[key] if t >= target]
+        return statistics.mean(values) if len(values) >= 2 else None
+
+tracker = AnomalyTracker()
+
+# ===== PARSER =====
 def parse_message(text):
     data = {}
     try:
-        price_match = re.search(r'\$ ([\d,]+\.\d+)', text)
-        if price_match: data['price'] = float(price_match.group(1).replace(',', ''))
-        
-        oi_match = re.search(r'Open Interest\s+([\d,]+\.\d+) BTC', text)
-        if oi_match: data['open_interest'] = float(oi_match.group(1).replace(',', ''))
-        
-        fr_match = re.search(r'Funding Rate\s+([\d.]+) %', text)
-        if fr_match: data['funding_rate'] = float(fr_match.group(1))
-        
-        long_match = re.search(r'🟢 LONG : ([\d.]+)%', text)
-        short_match = re.search(r'🔴 SHORT : ([\d.]+)%', text)
-        if long_match and short_match:
-            data['long_ratio'] = float(long_match.group(1))
-            data['short_ratio'] = float(short_match.group(1))
-        
-        buy_match = re.search(r'Buy \+(\d+\.\d+)', text)
-        sell_match = re.search(r'Sell \+(\d+\.\d+)', text)
-        if buy_match: data['taker_buy'] = float(buy_match.group(1))
-        if sell_match: data['taker_sell'] = float(sell_match.group(1))
-    except Exception as e:
-        print(f"⚠️ Parse hatası: {e}")
+        p = re.search(r'\$ ([\d,]+\.\d+)', text)
+        if p: data['price'] = float(p.group(1).replace(',', ''))
+        oi = re.search(r'Open Interest\s+([\d,]+\.\d+) BTC', text)
+        if oi: data['oi'] = float(oi.group(1).replace(',', ''))
+        long_m = re.search(r'🟢 LONG : ([\d.]+)%', text)
+        if long_m: data['long_ratio'] = float(long_m.group(1))
+        fr = re.search(r'Funding Rate\s+([\d.]+) %', text)
+        if fr: data['funding_rate'] = float(fr.group(1))
+        buy = re.search(r'Buy \+(\d+\.\d+)', text)
+        if buy: data['taker_buy'] = float(buy.group(1))
+    except: pass
     return data
 
-# ===== MESAJ GÖNDERME FONKSİYONU =====
-async def send_telegram_msg(bot, message):
-    try:
-        await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=message, parse_mode='HTML')
-    except Exception as e:
-        print(f"❌ Mesaj gönderme hatası: {e}")
-
-# ===== BAŞLANGIÇ BİLGİSİ =====
-async def send_startup_notification(bot):
-    msg = (
-        "<b>✅ BTC Analiz Botu Başlatıldı!</b>\n\n"
-        "Aşağıdaki veriler anlık takip ediliyor:\n"
-        "💰 <b>Fiyat Hareketleri</b>\n"
-        "📊 <b>Open Interest (OI)</b>\n"
-        "💸 <b>Funding Rates</b>\n"
-        "⚖️ <b>Long/Short Oranları</b>\n"
-        "🔥 <b>Taker Buy/Sell Hacmi</b>\n\n"
-        "🚀 <i>Anomaliler tespit edildiğinde burada paylaşılacaktır.</i>"
-    )
-    await send_telegram_msg(bot, msg)
-
-# ===== SİNYAL KONTROLÜ =====
-async def check_and_send_signals(data, bot):
+# ===== SİNYAL ÜRETİCİ =====
+async def process_signals(data, bot):
     signals = []
-    if len(tracker.price_history) < 3:
-        print(f"📊 Veri biriktiriliyor... ({len(tracker.price_history)}/{HISTORY_SIZE})")
-        return
+    now_str = datetime.now().strftime("%H:%M:%S")
 
-    # 1. Fiyat
-    avg_p = tracker.get_average(tracker.price_history)
-    if avg_p and 'price' in data:
-        diff = tracker.calculate_change_percent(data['price'], avg_p)
-        if abs(diff) > THRESHOLDS['price_change']:
-            emoji = "📈" if diff > 0 else "📉"
-            signals.append(f"{emoji} <b>Fiyat Değişimi:</b> %{diff:+.2f}\n💰 <b>Güncel:</b> ${data['price']:,.2f}")
+    # 1. ÖZEL FİLTRE: Long/Short %5 Mutlak Değişim (Son veriye göre)
+    if len(tracker.history['long_ratio']) >= 2:
+        current_long = data['long_ratio']
+        last_long = tracker.history['long_ratio'][-2][0] # Bir önceki veri
+        diff = current_long - last_long
+        
+        if abs(diff) >= 5.0:
+            direction = "🟢 LONG AGRESİF ARTIŞ" if diff > 0 else "🔴 SHORT AGRESİF ARTIŞ"
+            signals.append(f"⚡ <b>LS SERT SAPMA SİNYALİ</b>\n{direction}: %{abs(diff):.2f}\nGüncel Long: %{current_long:.2f}")
 
-    # 2. Open Interest
-    avg_oi = tracker.get_average(tracker.oi_history)
-    if avg_oi and 'open_interest' in data:
-        diff = tracker.calculate_change_percent(data['open_interest'], avg_oi)
-        if abs(diff) > THRESHOLDS['open_interest']:
-            signals.append(f"⚠️ <b>OI Değişimi:</b> %{diff:+.2f}\n💼 <b>Mevcut:</b> {data['open_interest']:,.2f} BTC")
+    # 2. ORTALAMA DIŞI ANOMALİLER (Diğer tüm veriler için)
+    check_map = {
+        'price': ('💰 Fiyat', '$', '{:,.2f}'),
+        'oi': ('📊 Open Interest', 'BTC', '{:,.2f}'),
+        'funding_rate': ('💸 Funding', '%', '{:.4f}'),
+        'taker_buy': ('🔥 Buy Vol', 'BTC', '{:,.2f}')
+    }
 
-    # 3. Funding Rate
-    avg_fr = tracker.get_average(tracker.funding_rate_history)
-    if avg_fr and 'funding_rate' in data:
-        diff = tracker.calculate_change_percent(data['funding_rate'], avg_fr)
-        if abs(diff) > THRESHOLDS['funding_rate']:
-            signals.append(f"💸 <b>Funding Rate Değişimi:</b> %{diff:+.2f}\n💵 <b>Mevcut:</b> %{data['funding_rate']:.4f}")
+    for key, (label, unit, fmt) in check_map.items():
+        if key in data:
+            current_val = data[key]
+            for hr in WINDOWS:
+                avg = tracker.get_avg(key, hr)
+                if avg:
+                    # Ortalamadan % sapma (Eşik değerlerini Railway'den alır veya default %2/5 kullanırız)
+                    change = ((current_val - avg) / avg) * 100
+                    # OI ve Fiyat için farklı duyarlılıklar eklenebilir, şimdilik %2 sapma anomali sayılır
+                    if abs(change) >= 2.0: 
+                        signals.append(
+                            f"⚠️ <b>{label} Anomalisi ({hr}s Ort.)</b>\n"
+                            f"Değişim: %{change:+.2f}\n"
+                            f"Güncel: {fmt.format(current_val)} {unit}"
+                        )
+                        break # Bir veri için en küçük zaman diliminde anomali varsa diğer saatlere bakmaya gerek yok
 
     if signals:
-        now = datetime.now().strftime("%H:%M:%S")
-        final_msg = f"🚨 <b>ANOMALİ TESPİT EDİLDİ</b> (⏰ {now})\n\n" + "\n\n".join(signals)
-        await send_telegram_msg(bot, final_msg)
+        msg = f"🚨 <b>ANOMALİ TESPİT EDİLDİ</b> (⏰ {now_str})\n\n" + "\n\n".join(signals)
+        try:
+            await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=msg, parse_mode='HTML')
+        except Exception as e: print(f"Gönderim hatası: {e}")
 
-# ===== MAIN =====
+# ===== ANA DÖNGÜ =====
 async def main():
-    if not all([API_ID, API_HASH, PHONE, SIGNAL_BOT_TOKEN, SIGNAL_CHAT_ID]):
-        print("❌ HATA: Environment variables eksik!")
-        return
-    
-    print("🤖 Bot hazırlanıyor...")
+    bot = Bot(token=SIGNAL_BOT_TOKEN)
     client = TelegramClient('bot_session', API_ID, API_HASH)
-    bot_instance = Bot(token=SIGNAL_BOT_TOKEN)
     
     await client.start(phone=PHONE)
-    print("✅ Telegram bağlantısı başarılı!")
     
-    # Başlangıç mesajını gönder
-    await send_startup_notification(bot_instance)
-    
+    # Giriş Mesajı
+    await bot.send_message(chat_id=SIGNAL_CHAT_ID, 
+        text="<b>🤖 Bot Başlatıldı</b>\n\n• L/S Oranı: %5 Mutlak Değişim Takibi\n• Diğer: 1-24s Ortalama Dışı Anomaliler", 
+        parse_mode='HTML')
+
     @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
     async def handler(event):
         data = parse_message(event.message.message)
-        if data and data.get('price'):
+        if data:
             tracker.add_data(data)
-            await check_and_send_signals(data, bot_instance)
+            await process_signals(data, bot)
     
-    print(f"👂 {SOURCE_CHANNEL} dinleniyor...")
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
