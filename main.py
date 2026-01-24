@@ -120,7 +120,20 @@ async def check_momentum(data, bot):
 
 async def main():
     bot = Bot(token=SIGNAL_BOT_TOKEN)
-    client = TelegramClient('bot_session', API_ID, API_HASH)
+    import os
+session_path = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', '.') + '/bot_session'
+client = TelegramClient(session_path, API_ID, API_HASH)
+```
+
+Sonra Railway'de:
+1. **Settings** → **Volumes**
+2. **Add Volume**
+3. Mount Path: `/data`
+
+Environment Variables'a ekleyin:
+```
+RAILWAY_VOLUME_MOUNT_PATH
+/data
     await client.start(phone=PHONE)
     
     print("🌐 Bot Birim Dönüştürücü Desteğiyle Başlatıldı!")
