@@ -89,21 +89,21 @@ async def check_momentum(data, bot):
 
 async def main():
     bot = Bot(token=SIGNAL_BOT_TOKEN)
-    client = TelegramClient('bot_session', API_ID, API_HASH)
+    # Session ismini çakışmayı önlemek için 'new_bot_session' yaptık
+    client = TelegramClient('new_bot_session', API_ID, API_HASH)
     await client.start(phone=PHONE)
     
     tanitim = (
         "<b>🚀 BTC MOMENTUM & ANOMALİ BOTU AKTİF!</b>\n\n"
-        "Bu bot, her 5 dakikada bir piyasadaki <b>'Balina'</b> hareketlerini analiz eder:\n\n"
-        "💰 <b>Fiyat:</b> Sert sapmaları yakalar.\n"
-        "📊 <b>Open Interest:</b> Yeni pozisyon girişlerini ölçer.\n"
-        "🔥 <b>Taker Vol:</b> Agresif alıcıları (K/M birim destekli) takip eder.\n"
-        "⚖️ <b>L/S Makas:</b> Global oyuncuların yön değişimini anında uyarır.\n\n"
+        "Bu bot, 5 dakikalık verilerdeki ani <b>'Uçurum Farkları'</b> yakalar:\n\n"
+        "💰 <b>Fiyat:</b> Sert sapmaları anında yakalar.\n"
+        "📊 <b>Open Interest:</b> Yeni pozisyon girişlerini izler.\n"
+        "🔥 <b>Taker Buy:</b> '1.01K' gibi büyük hacim birimlerini tanır.\n"
+        "⚖️ <b>L/S Makası:</b> Global Long/Short dengesindeki kaymaları uyarır.\n\n"
         "<i>✅ Sistem stabil. İlk 10 dk içinde veriler oturacaktır.</i>"
     )
     await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=tanitim, parse_mode='HTML')
-    print("🌐 Bot başarıyla başlatıldı ve tanıtım mesajı gönderildi.")
-
+    
     @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
     async def handler(event):
         data = parse_message(event.message.message)
