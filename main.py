@@ -6,7 +6,7 @@ from collections import deque
 from telethon import TelegramClient, events
 from telegram import Bot
 
-# ===== AYARLAR (Railway Variables) =====
+# ===== AYARLAR =====
 API_ID = int(os.getenv('API_ID', '0'))
 API_HASH = os.getenv('API_HASH', '')
 PHONE = os.getenv('PHONE', '')
@@ -32,17 +32,12 @@ class MomentumTracker:
 tracker = MomentumTracker()
 
 def clean_value(val_str):
-    """K, M, B gibi birimleri sayıya çevirir"""
     if not val_str: return 0.0
     val_str = val_str.replace(',', '').upper().strip()
-    
-    # Harf ve rakam ayıklama
     multiplier = 1.0
     if 'K' in val_str: multiplier = 1000.0
     elif 'M' in val_str: multiplier = 1000000.0
     elif 'B' in val_str: multiplier = 1000000000.0
-    
-    # Sadece rakam ve nokta kalsın
     num_part = re.sub(r'[^\d.]', '', val_str)
     try:
         return float(num_part) * multiplier
@@ -52,28 +47,17 @@ def clean_value(val_str):
 def parse_message(text):
     data = {}
     try:
-        # Fiyat
         p = re.search(r'\$ ([\d,.]+)', text)
         if p: data['price'] = clean_value(p.group(1))
-        
-        # Open Interest (BTC cinsinden olanı alıyoruz)
         oi = re.search(r'Open Interest\s+([\d,.]+[KMB]?) BTC', text)
         if oi: data['oi'] = clean_value(oi.group(1))
-
-        # L/S Oranı
         long_m = re.search(r'🟢 LONG : ([\d.]+)%', text)
         if long_m: data['long_ratio'] = float(long_m.group(1))
-        
-        # Funding Rate
         fr = re.search(r'Funding Rate\s+([\d.-]+) %', text)
         if fr: data['funding_rate'] = float(fr.group(1))
-        
-        # Taker Buy Volume
         buy = re.search(r'Buy \+([\d,.]+[KMB]?)', text)
         if buy: data['taker_buy'] = clean_value(buy.group(1))
-        
-    except Exception as e:
-        print(f"⚠️ Parse hatası: {e}")
+    except: pass
     return data
 
 async def check_momentum(data, bot):
@@ -83,61 +67,43 @@ async def check_momentum(data, bot):
     t_vol = float(os.getenv('THRESHOLD_VOLUME', '100.0'))
     t_ratio = float(os.getenv('THRESHOLD_RATIO', '5.0'))
 
-    # 1. Long/Short Oranı (Mutlak Puan Filtresi)
     if 'long_ratio' in data and len(tracker.history['long_ratio']) >= 2:
         diff = data['long_ratio'] - tracker.history['long_ratio'][-2]
         if abs(diff) >= t_ratio:
-            # Burayı güncelledik: Eksi değer kafa karışıklığını giderdik
-            if diff > 0:
-                direction = f"🟢 LONG ARTIŞI: +{diff:.2f} Puan"
-            else:
-                direction = f"🔴 SHORT ARTIŞI: {abs(diff):.2f} Puan"
-            
+            direction = f"🟢 LONG ARTIŞI: +{diff:.2f} P" if diff > 0 else f"🔴 SHORT ARTIŞI: {abs(diff):.2f} P"
             signals.append(f"⚖️ <b>L/S MAKAS DEĞİŞİMİ</b>\n{direction}")
 
-    # 2. Diğerleri (Yüzdesel Momentum)
-    checks = [
-        ('price', '💰 Fiyat', t_price),
-        ('oi', '📊 Open Interest', t_oi),
-        ('taker_buy', '🔥 Buy Vol', t_vol)
-    ]
-
+    checks = [('price', '💰 Fiyat', t_price), ('oi', '📊 OI', t_oi), ('taker_buy', '🔥 Buy Vol', t_vol)]
     for key, label, threshold in checks:
         if key in data and len(tracker.history[key]) >= 2:
-            current = data[key]
-            prev = tracker.history[key][-2]
+            current, prev = data[key], tracker.history[key][-2]
             if prev <= 0: continue
-            
             change = ((current - prev) / prev) * 100
             if abs(change) >= threshold:
                 icon = "🚀" if change > 0 else "📉"
                 signals.append(f"{icon} <b>{label} Anomali</b>: %{change:+.2f}")
 
     if signals:
-        now = datetime.now().strftime("%H:%M")
-        msg = f"🚨 <b>MOMENTUM RAPORU</b> (⏰ {now})\n\n" + "\n\n".join(signals)
+        msg = f"🚨 <b>MOMENTUM RAPORU</b>\n\n" + "\n\n".join(signals)
         await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=msg, parse_mode='HTML')
 
 async def main():
     bot = Bot(token=SIGNAL_BOT_TOKEN)
-    import os
-session_path = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', '.') + '/bot_session'
-client = TelegramClient(session_path, API_ID, API_HASH)
-```
-
-Sonra Railway'de:
-1. **Settings** → **Volumes**
-2. **Add Volume**
-3. Mount Path: `/data`
-
-Environment Variables'a ekleyin:
-```
-RAILWAY_VOLUME_MOUNT_PATH
-/data
+    client = TelegramClient('bot_session', API_ID, API_HASH)
     await client.start(phone=PHONE)
     
-    print("🌐 Bot Birim Dönüştürücü Desteğiyle Başlatıldı!")
-    
+    tanitim = (
+        "<b>🚀 BTC MOMENTUM & ANOMALİ BOTU AKTİF!</b>\n\n"
+        "Bu bot, her 5 dakikada bir piyasadaki <b>'Balina'</b> hareketlerini analiz eder:\n\n"
+        "💰 <b>Fiyat:</b> Sert sapmaları yakalar.\n"
+        "📊 <b>Open Interest:</b> Yeni pozisyon girişlerini ölçer.\n"
+        "🔥 <b>Taker Vol:</b> Agresif alıcıları (K/M birim destekli) takip eder.\n"
+        "⚖️ <b>L/S Makas:</b> Global oyuncuların yön değişimini anında uyarır.\n\n"
+        "<i>✅ Sistem stabil. İlk 10 dk içinde veriler oturacaktır.</i>"
+    )
+    await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=tanitim, parse_mode='HTML')
+    print("🌐 Bot başarıyla başlatıldı ve tanıtım mesajı gönderildi.")
+
     @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
     async def handler(event):
         data = parse_message(event.message.message)
