@@ -49,12 +49,17 @@ def parse_message(text):
     try:
         p = re.search(r'\$ ([\d,.]+)', text)
         if p: data['price'] = clean_value(p.group(1))
+        
+        # OI ve Hacim birimlerini (K, B) temizleyerek alıyoruz
         oi = re.search(r'Open Interest\s+([\d,.]+[KMB]?) BTC', text)
         if oi: data['oi'] = clean_value(oi.group(1))
+        
         long_m = re.search(r'🟢 LONG : ([\d.]+)%', text)
         if long_m: data['long_ratio'] = float(long_m.group(1))
+        
         fr = re.search(r'Funding Rate\s+([\d.-]+) %', text)
         if fr: data['funding_rate'] = float(fr.group(1))
+        
         buy = re.search(r'Buy \+([\d,.]+[KMB]?)', text)
         if buy: data['taker_buy'] = clean_value(buy.group(1))
     except: pass
@@ -89,21 +94,21 @@ async def check_momentum(data, bot):
 
 async def main():
     bot = Bot(token=SIGNAL_BOT_TOKEN)
-    # Session ismini çakışmayı önlemek için 'new_bot_session' yaptık
-    client = TelegramClient('new_bot_session', API_ID, API_HASH)
+    # Yeni bir session ismiyle temiz başlangıç yapıyoruz
+    client = TelegramClient('momentum_session_v1', API_ID, API_HASH)
     await client.start(phone=PHONE)
     
     tanitim = (
         "<b>🚀 BTC MOMENTUM & ANOMALİ BOTU AKTİF!</b>\n\n"
-        "Bu bot, 5 dakikalık verilerdeki ani <b>'Uçurum Farkları'</b> yakalar:\n\n"
-        "💰 <b>Fiyat:</b> Sert sapmaları anında yakalar.\n"
-        "📊 <b>Open Interest:</b> Yeni pozisyon girişlerini izler.\n"
-        "🔥 <b>Taker Buy:</b> '1.01K' gibi büyük hacim birimlerini tanır.\n"
-        "⚖️ <b>L/S Makası:</b> Global Long/Short dengesindeki kaymaları uyarır.\n\n"
-        "<i>✅ Sistem stabil. İlk 10 dk içinde veriler oturacaktır.</i>"
+        "Bu bot, 5 dakikalık periyotlarla piyasadaki <b>ani değişimleri</b> yakalar:\n\n"
+        "💰 <b>Fiyat:</b> Sert sapmaları (Örn: %1) bildirir.\n"
+        "📊 <b>Open Interest:</b> Pozisyon giriş-çıkışlarını (K/B birimli) izler.\n"
+        "🔥 <b>Buy Vol:</b> Agresif alımlardaki sıçramaları yakalar.\n"
+        "⚖️ <b>L/S Makası:</b> Global Long/Short oranındaki 5 puanlık kaymaları uyarır.\n\n"
+        "<i>✅ İlk veriden sonra (5 dk) analizler başlayacaktır.</i>"
     )
     await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=tanitim, parse_mode='HTML')
-    
+
     @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
     async def handler(event):
         data = parse_message(event.message.message)
