@@ -4,13 +4,13 @@ import asyncio
 from datetime import datetime
 from collections import deque
 from telethon import TelegramClient, events
-from telethon.sessions import StringSession # String desteği eklendi
+from telethon.sessions import StringSession 
 from telegram import Bot
 
 # ===== AYARLAR =====
 API_ID = int(os.getenv('API_ID', '0'))
 API_HASH = os.getenv('API_HASH', '')
-STRING_SESSION = os.getenv('TELEGRAM_STRING_SESSION', '') # Değişkenden alıyoruz
+STRING_SESSION = os.getenv('TELEGRAM_STRING_SESSION', '')
 SOURCE_CHANNEL = os.getenv('SOURCE_CHANNEL', '@longshortoi')
 SIGNAL_BOT_TOKEN = os.getenv('SIGNAL_BOT_TOKEN', '')
 SIGNAL_CHAT_ID = int(os.getenv('SIGNAL_CHAT_ID', '0'))
@@ -68,39 +68,52 @@ async def check_momentum(data, bot):
     t_vol = float(os.getenv('THRESHOLD_VOLUME', '100.0'))
     t_ratio = float(os.getenv('THRESHOLD_RATIO', '5.0'))
 
+    # ⚖️ L/S Makas Değişimi (Önceki vs Güncel Puan)
     if 'long_ratio' in data and len(tracker.history['long_ratio']) >= 2:
-        diff = data['long_ratio'] - tracker.history['long_ratio'][-2]
+        current_lr = data['long_ratio']
+        prev_lr = tracker.history['long_ratio'][-2]
+        diff = current_lr - prev_lr
+        
         if abs(diff) >= t_ratio:
             direction = f"🟢 LONG ARTIŞI: +{diff:.2f} P" if diff > 0 else f"🔴 SHORT ARTIŞI: {abs(diff):.2f} P"
-            signals.append(f"⚖️ <b>L/S MAKAS DEĞİŞİMİ</b>\n{direction}")
+            signals.append(
+                f"⚖️ <b>L/S MAKAS DEĞİŞİMİ</b>\n{direction}\n"
+                f"<code>Eski: %{prev_lr:.2f} | Yeni: %{current_lr:.2f}</code>"
+            )
 
-    checks = [('price', '💰 Fiyat', t_price), ('oi', '📊 OI', t_oi), ('taker_buy', '🔥 Buy Vol', t_vol)]
-    for key, label, threshold in checks:
+    # 💰 📊 🔥 Diğerleri (Önceki vs Güncel Değer)
+    checks = [
+        ('price', '💰 Fiyat', t_price, "$"),
+        ('oi', '📊 OI', t_oi, "BTC"),
+        ('taker_buy', '🔥 Buy Vol', t_vol, "BTC")
+    ]
+
+    for key, label, threshold, unit in checks:
         if key in data and len(tracker.history[key]) >= 2:
             current, prev = data[key], tracker.history[key][-2]
             if prev <= 0: continue
+            
             change = ((current - prev) / prev) * 100
             if abs(change) >= threshold:
                 icon = "🚀" if change > 0 else "📉"
-                signals.append(f"{icon} <b>{label} Anomali</b>: %{change:+.2f}")
+                # Rakamları binlik ayırıcı ile güzelleştiriyoruz
+                signals.append(
+                    f"{icon} <b>{label} Anomali</b>: %{change:+.2f}\n"
+                    f"<code>Eski: {prev:,.2f} {unit}</code>\n"
+                    f"<code>Yeni: {current:,.2f} {unit}</code>"
+                )
 
     if signals:
-        msg = f"🚨 <b>MOMENTUM RAPORU</b>\n\n" + "\n\n".join(signals)
+        now = datetime.now().strftime("%H:%M")
+        msg = f"🚨 <b>MOMENTUM RAPORU</b> (⏰ {now})\n\n" + "\n\n".join(signals)
         await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=msg, parse_mode='HTML')
 
 async def main():
     bot = Bot(token=SIGNAL_BOT_TOKEN)
-    # Session artık dosyadan değil string'den okunuyor
     client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
+    await client.start()
     
-    await client.start() # Artık telefon sormaz, string içinde yetki var
-    
-    tanitim = (
-        "<b>💎 BTC MOMENTUM (STRING SESSION) AKTİF!</b>\n\n"
-        "Birim desteği ve kalıcı oturum aktifleştirildi.\n"
-        "Uçurum farklar (Fiyat, OI, Hacim, L/S) takip ediliyor."
-    )
-    await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=tanitim, parse_mode='HTML')
+    print("🌐 Bot değer göstergeli sinyal moduyla başlatıldı!")
 
     @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
     async def handler(event):
