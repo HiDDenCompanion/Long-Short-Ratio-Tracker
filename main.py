@@ -7,7 +7,7 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession 
 from telegram import Bot
 
-# ===== AYARLAR =====
+# ===== AYARLAR (Railway Variables üzerinden okunur) =====
 API_ID = int(os.getenv('API_ID', '0'))
 API_HASH = os.getenv('API_HASH', '')
 STRING_SESSION = os.getenv('TELEGRAM_STRING_SESSION', '')
@@ -17,12 +17,13 @@ SIGNAL_CHAT_ID = int(os.getenv('SIGNAL_CHAT_ID', '0'))
 
 class MomentumTracker:
     def __init__(self):
+        # 5 dakikalık verileri 24 saat (288 mesaj) boyunca saklar
         self.history = {
             'price': deque(maxlen=288),
             'oi': deque(maxlen=288),
             'long_ratio': deque(maxlen=288),
-            'funding_rate': deque(maxlen=288),
-            'taker_buy': deque(maxlen=288)
+            'taker_buy': deque(maxlen=288),
+            'taker_sell': deque(maxlen=288)
         }
 
     def add_data(self, data):
@@ -48,32 +49,41 @@ def clean_value(val_str):
 def parse_message(text):
     data = {}
     try:
+        # Fiyat
         p = re.search(r'\$ ([\d,.]+)', text)
         if p: data['price'] = clean_value(p.group(1))
+        
+        # Open Interest
         oi = re.search(r'Open Interest\s+([\d,.]+[KMB]?) BTC', text)
         if oi: data['oi'] = clean_value(oi.group(1))
+        
+        # Global Long Oranı
         long_m = re.search(r'🟢 LONG : ([\d.]+)%', text)
         if long_m: data['long_ratio'] = float(long_m.group(1))
-        fr = re.search(r'Funding Rate\s+([\d.-]+) %', text)
-        if fr: data['funding_rate'] = float(fr.group(1))
+        
+        # Taker Hacimleri (K, M, B birim destekli)
         buy = re.search(r'Buy \+([\d,.]+[KMB]?)', text)
         if buy: data['taker_buy'] = clean_value(buy.group(1))
+        
+        sell = re.search(r'Sell \+([\d,.]+[KMB]?)', text)
+        if sell: data['taker_sell'] = clean_value(sell.group(1))
     except: pass
     return data
 
 async def check_momentum(data, bot):
     signals = []
+    # Eşik Değerler (Railway Variables)
     t_price = float(os.getenv('THRESHOLD_PRICE', '1.0'))
     t_oi = float(os.getenv('THRESHOLD_OI', '3.0'))
-    t_vol = float(os.getenv('THRESHOLD_VOLUME', '100.0'))
     t_ratio = float(os.getenv('THRESHOLD_RATIO', '5.0'))
+    t_vol_buy = float(os.getenv('THRESHOLD_BUY_VOLUME', '400.0'))
+    t_vol_sell = float(os.getenv('THRESHOLD_SELL_VOLUME', '400.0'))
 
-    # ⚖️ L/S Makas Değişimi (Önceki vs Güncel Puan)
+    # 1. Long/Short Makas Değişimi
     if 'long_ratio' in data and len(tracker.history['long_ratio']) >= 2:
         current_lr = data['long_ratio']
         prev_lr = tracker.history['long_ratio'][-2]
         diff = current_lr - prev_lr
-        
         if abs(diff) >= t_ratio:
             direction = f"🟢 LONG ARTIŞI: +{diff:.2f} P" if diff > 0 else f"🔴 SHORT ARTIŞI: {abs(diff):.2f} P"
             signals.append(
@@ -81,11 +91,12 @@ async def check_momentum(data, bot):
                 f"<code>Eski: %{prev_lr:.2f} | Yeni: %{current_lr:.2f}</code>"
             )
 
-    # 💰 📊 🔥 Diğerleri (Önceki vs Güncel Değer)
+    # 2. Hacim, OI ve Fiyat Anomalileri
     checks = [
         ('price', '💰 Fiyat', t_price, "$"),
         ('oi', '📊 OI', t_oi, "BTC"),
-        ('taker_buy', '🔥 Buy Vol', t_vol, "BTC")
+        ('taker_buy', '🔥 Buy Vol', t_vol_buy, "BTC"),
+        ('taker_sell', '📉 Sell Vol', t_vol_sell, "BTC")
     ]
 
     for key, label, threshold, unit in checks:
@@ -96,7 +107,6 @@ async def check_momentum(data, bot):
             change = ((current - prev) / prev) * 100
             if abs(change) >= threshold:
                 icon = "🚀" if change > 0 else "📉"
-                # Rakamları binlik ayırıcı ile güzelleştiriyoruz
                 signals.append(
                     f"{icon} <b>{label} Anomali</b>: %{change:+.2f}\n"
                     f"<code>Eski: {prev:,.2f} {unit}</code>\n"
@@ -110,10 +120,18 @@ async def check_momentum(data, bot):
 
 async def main():
     bot = Bot(token=SIGNAL_BOT_TOKEN)
+    # String Session ile kalıcı bağlantı
     client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
     await client.start()
     
-    print("🌐 Bot değer göstergeli sinyal moduyla başlatıldı!")
+    tanitim = (
+        "<b>💎 BTC ELITE MOMENTUM BOT AKTİF!</b>\n\n"
+        "✅ <b>Taker Buy & Sell:</b> Ayrı eşiklerle takipte.\n"
+        "✅ <b>Değer Karşılaştırma:</b> Eski vs Yeni veriler aktif.\n"
+        "✅ <b>L/S Makası:</b> 5 puanlık değişimler radarda.\n"
+        "✅ <b>Kalıcı Oturum:</b> String Session devrede."
+    )
+    await bot.send_message(chat_id=SIGNAL_CHAT_ID, text=tanitim, parse_mode='HTML')
 
     @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
     async def handler(event):
